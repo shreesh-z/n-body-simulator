@@ -1,24 +1,30 @@
-#include <iostream>
+#include <stdio.h>
 #include <random>
 #include <cmath>
+
+#include "barnes_hut.h"
 
 /*
 	------------------------GLOBAL VARIABLES---------------------------
 */
 
-//number of bodies in the space. Low number during development.
+//number of bodies in the space
 int N = 10;
-//Gravitation constant, can be varied
+//Gravitation constant
 double G = 0.0000000005;
 //theta criterion (inverse)
-double thetaCritInv = 2.0;
+double THETA_CRIT_INV = 2.0;
+//Cap on the proportionality coefficient of the grav force
+double GRAV_COEFF_CAP = 10000.0;
 //half dimensions of the square space
-double squareDims = 1000.0;
+double SQUARE_DIMS = 1000.0;
 //bounds of the space in cartesian coordinates
-double leftPos = -squareDims, downPos = -squareDims, halfSide = squareDims;
+double LEFT_POS = -SQUARE_DIMS;
+double DOWN_POS = -SQUARE_DIMS;
+double HALF_SIDE_LENGTH = SQUARE_DIMS;
 
 /*
-	---------------------------STRUCT: BODY-----------------------------
+	---------------------------BODY STRUCT-----------------------------
 	
 	Attributes:
 		ID     : 0 for interior node bodies (COM bodies) and positive int for real bodies
@@ -43,9 +49,9 @@ double leftPos = -squareDims, downPos = -squareDims, halfSide = squareDims;
 */
 
 struct Body{
-	/*ID is used while calculating forces
-	If the ID of the body is the same as of the body of
-	the external node, force is zero*/
+	//ID is used while calculating forces
+	//If the ID of the body is the same as of the body of
+	//the external node, force is zero
 	int ID;
 	double mass;
 	
@@ -54,7 +60,7 @@ struct Body{
 	
 	//Force acting on the body
 	double force[2];
-
+	
 	//For a general body
 	Body(int ID_, double m_, double posX_, double posY_, double velX_, double velY_){
 		ID = ID_;
@@ -90,10 +96,12 @@ struct Body{
 	}
 };
 
+//The array of bodies that are being simulated
+Body **Bodies;
 
 
 /*
-	-------------------------STRUCT: BARNES-HUT TREE NODE--------------------------------
+	-------------------------BARNES-HUT TREE NODE STRUCT--------------------------------
 	
 	Attributes:
 		*body      : pointer to the body contained in the node
@@ -205,9 +213,9 @@ void insert(Node *root, Body *inBody){
 		if( root->quadNodes[nodeListInd] == NULL ){
 			//Make new node if null, then exit
 			root->quadNodes[nodeListInd] = new Node(inBody, 
-									root->left + directionX * root->s, 
-									root->down + directionY * root->s, 
-									root->s/2);
+													root->left + directionX * root->s, 
+													root->down + directionY * root->s, 
+													root->s/2);
 			return;
 		}else{
 			//If a node exists there already, add recursively
@@ -240,12 +248,13 @@ void printTree(Node *root){
 			printTree(root->quadNodes[i]);
 		}
 	}
-	std::cout << root->body->ID << ' ' << root->body->mass << ' ' << root->s << "\n";
+	//std::cout << root->body->ID << ' ' << root->body->mass << ' ' << root->s << "\n";
+	printf("%d %lf %lf\n", root->body->ID, root->body->mass, root->s);
 }
 
 //find net force on a body due to the bodies present inside the B-H tree
 //acts recursively
-void findForce(Body *body, Node *root, double coeffCap){
+void findForce(Body *body, Node *root){
 	
 	//If the same body is encountered in the tree, don't add anything to the force
 	if( body->ID == root->body->ID )
@@ -258,13 +267,13 @@ void findForce(Body *body, Node *root, double coeffCap){
 	//Net distance between two bodies
 	double dist = std::hypot(diffX, diffY);
 	
-	if( dist > thetaCritInv*root->s*2 || root->body->ID != 0){
+	if( dist > THETA_CRIT_INV*root->s*2 || root->body->ID != 0){
 		//If COM body satisfies theta criterion
 		//OR if an exterior node has been reached
 		double coeff = (G * body->mass * root->body->mass)/std::pow(dist,3);
 		
 		//capping coeff value so infinities are not produced
-		coeff = coeff>coeffCap ? coeffCap : coeff;
+		coeff = coeff > GRAV_COEFF_CAP ? GRAV_COEFF_CAP : coeff;
 		
 		//calculating force acc. to Newton's Law of Gravitation
 		body->force[0] += coeff*diffX;
@@ -277,14 +286,14 @@ void findForce(Body *body, Node *root, double coeffCap){
 		for( int i = 0; i < 4; i++ ){
 			if( root->quadNodes[i] != NULL ){
 				//recursively finding the force on current body by bodies inside current node
-				findForce(body, root->quadNodes[i], coeffCap);
+				findForce(body, root->quadNodes[i]);
 			}
 		}
 		return;
 	}
 }
 
-//to delete the tree once all forces have been found
+//to delete tree once all forces have been found
 void deleteTree(Node *node){
 	if( node == NULL )
 		return;
@@ -295,23 +304,23 @@ void deleteTree(Node *node){
 }
 
 //RK4 integrator
-void RK4(int N, Body **Bodies, double timestep, double coeffCap){
+void RK4(Body **Bodies, double timestep){
 	
 	//Coords of bodies at time t_init
-	double OrigCoords[4][N];
+	double *OrigCoords = new double[N*4]; //Nx4 matrix
 	for( int i = 0; i < N; i++){
 		for( int j = 0; j < 4; j++){
-			OrigCoords[j][i] = Bodies[i]->coords[j];
+			OrigCoords[4*i + j] = Bodies[i]->coords[j];
 		}
 	}
 	
-	//stores the 4 RK4 function values
-	double functs[4][N][4];
+	//stores the 4 sets of RK4 function values
+	double *functs = new double[N*4*4];
 	
 	for( int rk = 0; rk < 4; rk++ ){
 		
 		//The root node of the BH tree, used to find the forces
-		Node *root = new Node(leftPos, downPos, halfSide);
+		Node *root = new Node(LEFT_POS, DOWN_POS, HALF_SIDE_LENGTH);
 		
 		//First add all bodies to the BH Tree
 		for( int i = 0; i < N; i++ ){
@@ -322,7 +331,7 @@ void RK4(int N, Body **Bodies, double timestep, double coeffCap){
 		
 		//Then find force acting on each body
 		for( int i = 0; i < N; i++ ){
-			findForce(Bodies[i], root, coeffCap);
+			findForce(Bodies[i], root);
 		}
 		
 		//Now delete the tree for a fresh tree in the next RK4 iteration
@@ -332,9 +341,9 @@ void RK4(int N, Body **Bodies, double timestep, double coeffCap){
 		for( int i = 0; i < N; i++ ){
 			for( int j = 0; j < 2; j++ ){
 				//storing velocity values as functs for displacement
-				functs[j][i][rk] = Bodies[i]->coords[j+2];
+				functs[4*i + j + 4*N*rk] = Bodies[i]->coords[j+2];
 				//storing force values as functs for velocity
-				functs[j+2][i][rk] = Bodies[i]->force[j];
+				functs[4*i + (j+2) + 4*N*rk] = Bodies[i]->force[j];
 			}
 		}
 		
@@ -344,18 +353,18 @@ void RK4(int N, Body **Bodies, double timestep, double coeffCap){
 			for( int i = 0; i < N; i++ ){
 				for( int j = 0; j < 2; j++ ){
 					//First x and y coords
-					Bodies[i]->coords[j] = OrigCoords[j][i] + (timestep/2)*Bodies[i]->coords[j+2];
+					Bodies[i]->coords[j] = OrigCoords[4*i + j] + (timestep/2)*Bodies[i]->coords[j+2];
 					//Now vx and vy
-					Bodies[i]->coords[j+2] = OrigCoords[j+2][i] + (timestep/2)*Bodies[i]->force[j];
+					Bodies[i]->coords[j+2] = OrigCoords[4*i + j+2] + (timestep/2)*Bodies[i]->force[j];
 				}
 			}
 		}else if( rk == 2 ){
 			for( int i = 0; i < N; i++ ){
 				for( int j = 0; j < 2; j++ ){
 					//First x and y coords
-					Bodies[i]->coords[j] = OrigCoords[j][i] + timestep*Bodies[i]->coords[j+2];
+					Bodies[i]->coords[j] = OrigCoords[4*i + j] + timestep*Bodies[i]->coords[j+2];
 					//Now vx and vy
-					Bodies[i]->coords[j+2] = OrigCoords[j+2][i] + timestep*Bodies[i]->force[j];
+					Bodies[i]->coords[j+2] = OrigCoords[4*i + j+2] + timestep*Bodies[i]->force[j];
 				}
 			}
 		}else{
@@ -363,22 +372,31 @@ void RK4(int N, Body **Bodies, double timestep, double coeffCap){
 			for( int i = 0; i < N; i++ ){
 				for( int j = 0; j < 4; j++ ){
 					//taking full RK4 step with the 4xNx4 matrix
-					Bodies[i]->coords[j] = OrigCoords[j][i] + (timestep/6)*(
-												functs[j][i][0] +
-												2*( functs[j][i][1] + functs[j][i][2] ) +
-												functs[j][i][3]
-												);
+					Bodies[i]->coords[j] = OrigCoords[4*i + j] + (timestep/6)*(
+																		functs[4*i + j] +
+																		2*( functs[4*i + j + 4*N] + functs[4*i + j + 8*N] ) +
+																		functs[4*i + j + 12*N]
+																		);
 				}
+				//Bounding the x and y coords in the square
+				if( Bodies[i]->coords[0] < -HALF_SIDE_LENGTH )
+					Bodies[i]->coords[0] += 2*HALF_SIDE_LENGTH;
+				else if( Bodies[i]->coords[0] > HALF_SIDE_LENGTH )
+					Bodies[i]->coords[0] -= 2*HALF_SIDE_LENGTH;
+				
+				if( Bodies[i]->coords[1] < -HALF_SIDE_LENGTH )
+					Bodies[i]->coords[1] += 2*HALF_SIDE_LENGTH;
+				else if( Bodies[i]->coords[1] > HALF_SIDE_LENGTH )
+					Bodies[i]->coords[1] -= 2*HALF_SIDE_LENGTH;
 			}
 		}
 	}
 }
 
-//Initializing the bodies array
-void init(Body **Bodies){
+void initBodies(){
 	//pRNG functions from stdlib
 	std::mt19937 gen(1);		//constant seed during development
-	std::uniform_real_distribution<> disMass(1.0, 2.0), disPos(leftPos/2,-leftPos/2);		
+	std::uniform_real_distribution<> disMass(1.0, 2.0), disPos(LEFT_POS/2,-LEFT_POS/2);		
 	
 	//filling the bodies array with random masses and initial positions
 	for(int i = 0; i < N; i++){
@@ -387,29 +405,49 @@ void init(Body **Bodies){
 	}
 }
 
-//evolving the bodies in time
-void evolve(Body **Bodies){
+void evolveBodies(){
 	double maxTime = 5;
 	double timestep = 1;
 	int count = (int)(maxTime/timestep);
 	
 	for( int t = 0; t < count; t++ ){
-		RK4(N, Bodies, timestep, 10000);
+		RK4(Bodies, timestep);
 		for( int i = 0; i < N; i++){
-			//Outputting the position and velocity values of each body
-			std::cout << Bodies[i]->coords[0] << ' ' << Bodies[i]->coords[1] << ' ' << Bodies[i]->coords[2] << ' ' << Bodies[i]->coords[2] << "\n";
+			//std::cout << Bodies[i]->coords[0] << ' ' << Bodies[i]->coords[1] << ' ' << Bodies[i]->coords[2] << ' ' << Bodies[i]->coords[2] << "\n";
+			printf("%f\n",Bodies[i]->coords[0]);
 		}
-		std::cout << "\n";
+		printf("\n");
+		//std::cout << "\n";
 	}
 }
 
-int main(){
-	
-	//array holding all the bodies
-	Body *Bodies[N];
-	
-	init(Bodies);
-	evolve(Bodies);
-	
-	return 0;	
+void evolveBodiesStep(double timestep){
+	RK4(Bodies, timestep);
 }
+
+void setSimulationParams(int N_, double G_, double theta_, double coeffCap_, double squareDims_){
+	N = N_;
+	G = G_;
+	THETA_CRIT_INV = theta_;
+	GRAV_COEFF_CAP = coeffCap_;
+	SQUARE_DIMS = squareDims_;
+	Bodies = new Body*[N];
+}
+
+double* getBodyPoints(){
+	//Nx2 matrix with x,y coordinates of the bodies
+	double *points = new double[N*2];
+	for( int i = 0; i < N; i++ ){
+		points[2*i] = Bodies[i]->coords[0];
+		points[2*i + 1] = Bodies[i]->coords[1];
+	}
+	return points;
+}
+
+/*int main(){
+	//array holding all the bodies
+	//Body *Bodies[N];
+	initBodies();
+	evolveBodies();
+	return 0;
+}*/
